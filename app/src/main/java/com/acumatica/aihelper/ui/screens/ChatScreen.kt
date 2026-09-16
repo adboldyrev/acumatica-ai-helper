@@ -137,7 +137,7 @@ fun ChatScreen(
                                     color = if (isError) Color.Red else Color.Unspecified
                                 )
                                 msg.entityName?.let { entity ->
-                                    Text("Сущность: $entity", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, color = Color.Gray)
+                                    Text("Entity: $entity", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, color = Color.Gray)
                                 }
                             }
                             Spacer(modifier = Modifier.height(4.dp))

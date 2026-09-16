@@ -39,6 +39,7 @@ class SecurityRepository(context: Context) {
             .putString("clientSecret", config.clientSecret)
             .putString("username", config.username)
             .putString("password", config.password)
+            .putString("apiVersion", config.apiVersion)
             .putString("accessToken", accessToken)
             .putString("refreshToken", refreshToken ?: "")
             .putLong("expiresAt", expiresAt)
@@ -69,7 +70,8 @@ class SecurityRepository(context: Context) {
             clientId = prefs.getString("clientId", "") ?: "",
             clientSecret = prefs.getString("clientSecret", "") ?: "",
             username = prefs.getString("username", "") ?: "",
-            password = prefs.getString("password", "") ?: ""
+            password = prefs.getString("password", "") ?: "",
+            apiVersion = prefs.getString("apiVersion", "24.200.001") ?: "24.200.001"
         )
     }
 
@@ -82,7 +84,10 @@ class SecurityRepository(context: Context) {
         configs.forEach { cfg ->
             val entityJson = JSONObject().apply {
                 put("isEnabled", cfg.isEnabled)
+                put("endpointPath", cfg.endpointPath)
+                put("keyField", cfg.keyField)
                 put("selectedFields", JSONArray(cfg.selectedFields.toList()))
+                put("availableFields", JSONArray(cfg.availableFields))
             }
             jsonObj.put(cfg.entityName, entityJson)
         }
@@ -93,9 +98,35 @@ class SecurityRepository(context: Context) {
         val savedStr = prefs.getString("custom_entity_configs", null)
         val savedObj = if (savedStr != null) runCatching { JSONObject(savedStr) }.getOrNull() else null
 
-        return fallbackAvailableSchemas.map { (entityName, fields) ->
+        val entityNamesSource = savedObj?.keys()?.asSequence()?.toList() ?: fallbackAvailableSchemas.keys.toList()
+
+        return entityNamesSource.map { entityName ->
             val savedEntity = savedObj?.optJSONObject(entityName)
             val isEnabled = savedEntity?.optBoolean("isEnabled", true) ?: true
+            
+            val endpointPath = savedEntity?.optString("endpointPath") ?: "/$entityName"
+            val savedAvailableFields = mutableListOf<String>()
+            
+            if (savedEntity != null && savedEntity.has("availableFields")) {
+                val arr = savedEntity.getJSONArray("availableFields")
+                for (i in 0 until arr.length()) {
+                    savedAvailableFields.add(arr.getString(i))
+                }
+            } else {
+                savedAvailableFields.addAll(fallbackAvailableSchemas[entityName] ?: listOf("ID"))
+            }
+
+            val keyField = savedEntity?.optString("keyField") ?: when (entityName) {
+                "Customer" -> "CustomerID"
+                "StockItem" -> "InventoryID"
+                "Vendor" -> "VendorID"
+                "Project" -> "ProjectID"
+                "Warehouse" -> "WarehouseID"
+                "SalesOrder", "PurchaseOrder" -> "OrderNbr"
+                "SalesInvoice" -> "ReferenceNbr"
+                else -> if (savedAvailableFields.isNotEmpty()) savedAvailableFields[0] else "ID"
+            }
+
             val selectedFieldsList = mutableSetOf<String>()
 
             if (savedEntity != null && savedEntity.has("selectedFields")) {
@@ -104,14 +135,16 @@ class SecurityRepository(context: Context) {
                     selectedFieldsList.add(arr.getString(i))
                 }
             } else {
-                selectedFieldsList.addAll(fields.take(10))
+                selectedFieldsList.addAll(savedAvailableFields.take(10))
             }
 
             EntitySchemaConfig(
                 entityName = entityName,
                 isEnabled = isEnabled,
-                availableFields = fields,
-                selectedFields = selectedFieldsList
+                availableFields = savedAvailableFields,
+                selectedFields = selectedFieldsList,
+                endpointPath = endpointPath,
+                keyField = keyField
             )
         }
     }

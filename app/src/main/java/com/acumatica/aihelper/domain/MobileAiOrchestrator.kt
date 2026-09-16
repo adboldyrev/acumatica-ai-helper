@@ -1,5 +1,6 @@
 package com.acumatica.aihelper.domain
 
+import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -76,10 +77,22 @@ class MobileAiOrchestrator(
     suspend fun fetchAndApplySwaggerSchema(): String = withContext(Dispatchers.IO) {
         val config = securityRepo.getConfig() ?: return@withContext "Error: Please log in first."
         val swaggerJsonStr = restClient.downloadSwaggerOas(config.baseUrl)
-        val parsedSchemas = swaggerParser.parseSwaggerJson(swaggerJsonStr)
-        configuredEntities = securityRepo.getEntityConfigs(parsedSchemas)
-        securityRepo.saveEntityConfigs(configuredEntities)
-        "Successfully loaded entities from OAS: ${parsedSchemas.size}"
+        
+        val extendedSchemas = swaggerParser.parseSwaggerJsonExtended(swaggerJsonStr)
+        
+        val baseSchemas = extendedSchemas.mapValues { it.value.fields }
+        val loadedConfigs = securityRepo.getEntityConfigs(baseSchemas)
+        
+        val enrichedConfigs = loadedConfigs.map { cfg ->
+            val ext = extendedSchemas[cfg.entityName]
+            if (ext != null) {
+                cfg.copy(endpointPath = ext.endpointPath, keyField = ext.keyField)
+            } else cfg
+        }
+        
+        configuredEntities = enrichedConfigs
+        securityRepo.saveEntityConfigs(enrichedConfigs)
+        "Successfully loaded entities from OAS: ${enrichedConfigs.size}"
     }
 
     fun updateEntityConfigs(newConfigs: List<EntitySchemaConfig>) {
@@ -160,8 +173,7 @@ class MobileAiOrchestrator(
         val token = securityRepo.getAccessToken() ?: return@withContext "Error: No access token found."
 
         return@withContext try {
-            val getPath = "StockItem?\$filter=AlternateID eq '$barcode' or InventoryCD eq '$barcode'"
-            val resultJson = restClient.executeGet(config.baseUrl, token, "StockItem", barcode, customPath = getPath)
+            val resultJson = restClient.executeGet(config.baseUrl, token, "StockItem", barcode)
             val answer = "Barcode search result for $barcode: $resultJson"
             chatDao.insertMessage(
                 ChatMessageEntity(
@@ -251,7 +263,6 @@ class MobileAiOrchestrator(
         onRequireMutationConfirmation: suspend (ToolCall) -> Boolean
     ): String {
         val config = securityRepo.getConfig() ?: return "Error: No configuration found."
-        val token = securityRepo.getAccessToken() ?: return "Error: No access token found."
 
         val provider = securityRepo.getAiProvider()
         val aiKey = securityRepo.getAiKey()
@@ -260,7 +271,7 @@ class MobileAiOrchestrator(
             userPrompt = prompt,
             provider = provider,
             apiKey = aiKey,
-            activeEntities = configuredEntities
+            allConfiguredEntities = configuredEntities
         ) ?: run {
             val responseText = "AI could not determine intent or Acumatica ERP entity. Ensure the required entity is enabled in OpenAPI Schema settings."
             chatDao.insertMessage(ChatMessageEntity(sender = "bot", text = responseText))
@@ -287,11 +298,17 @@ class MobileAiOrchestrator(
         val entityConfig = configuredEntities.find { it.entityName.equals(toolCall.entityName, ignoreCase = true) }
         val selectedFields = entityConfig?.selectedFields ?: emptySet()
 
+        val requestUrl = if (!toolCall.recordKey.isNullOrBlank()) {
+            "${config.baseUrl}/entity/Default/${config.apiVersion}/${toolCall.endpointPath}/${toolCall.recordKey}"
+        } else {
+            "${config.baseUrl}/entity/Default/${config.apiVersion}/${toolCall.endpointPath}"
+        }
+
         return try {
-            ensureValidToken(config)
+            val token = ensureValidToken(config) ?: return "Error: Authentication failed."
             val rawResult: String = if (isMutation) {
                 restClient.executeMutation(
-                    baseUrl = config.baseUrl,
+                    baseUrl = requestUrl,
                     accessToken = token,
                     entityName = toolCall.entityName,
                     method = toolCall.method,
@@ -300,7 +317,7 @@ class MobileAiOrchestrator(
                 )
             } else {
                 restClient.executeGet(
-                    baseUrl = config.baseUrl,
+                    baseUrl = requestUrl,
                     accessToken = token,
                     entityName = toolCall.entityName,
                     recordKey = toolCall.recordKey,

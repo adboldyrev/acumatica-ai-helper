@@ -78,19 +78,30 @@ class AcumaticaRestClient(private val httpClient: OkHttpClient = OkHttpClient())
         accessToken: String,
         entityName: String,
         recordKey: String?,
-        selectedFields: Set<String> = emptySet(),
-        customPath: String? = null
+        selectedFields: Set<String> = emptySet()
     ): String = withContext(Dispatchers.IO) {
         val selectQuery = if (selectedFields.isNotEmpty()) "\$select=${selectedFields.joinToString(",")}" else "\$select=*"
-        val path = customPath ?: if (recordKey != null) "$entityName/$recordKey?$selectQuery" else "$entityName?\$top=5&$selectQuery"
-        val url = if (path.startsWith("http")) path else "$baseUrl/entity/Default/24.200.001/$path"
+        val extraParams = if (recordKey != null) {
+            selectQuery
+        } else {
+            "\$top=5&$selectQuery"
+        }
+
+        val finalUrl = when {
+            baseUrl.contains("?") -> "$baseUrl&$extraParams"
+            else -> "$baseUrl?$extraParams"
+        }
+
 
         val request = Request.Builder()
-            .url(url)
+            .url(finalUrl)
             .addHeader("Authorization", "Bearer $accessToken")
             .addHeader("Accept", "application/json")
+            .addHeader("Content-Type", "application/json")
             .get()
             .build()
+
+        Log.i("executeGet", finalUrl)
 
         httpClient.newCall(request).execute().use { response ->
             val responseBodyStr = response.body?.string() ?: "{}"

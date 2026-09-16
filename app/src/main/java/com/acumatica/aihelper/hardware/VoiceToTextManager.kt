@@ -21,7 +21,7 @@ class VoiceToTextManager(private val context: Context) {
         onError: (String) -> Unit
     ) {
         if (!SpeechRecognizer.isRecognitionAvailable(context)) {
-            onError("Распознавание речи недоступно на данном устройстве.")
+            onError("Speech recognition unavailable")
             return
         }
 

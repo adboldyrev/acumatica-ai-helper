@@ -7,5 +7,6 @@ data class ToolCall(
     val entityName: String,
     val method: String, // GET, PUT, POST, PATCH, DELETE
     val recordKey: String?,
-    val payload: JSONObject?
+    val payload: JSONObject?,
+    val endpointPath: String?
 )

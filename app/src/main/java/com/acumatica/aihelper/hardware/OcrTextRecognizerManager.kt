@@ -18,7 +18,6 @@ class OcrTextRecognizerManager(private val context: Context) {
     }
 
     private fun extractStructuredTextFromBitmap(bitmap: Bitmap): String {
-        // Симуляция алгоритма обнаружения текстовых блоков
         return "INVOICE #INV000046\nCustomer: COFFEESHOP\nItem: AAMACHINE1 Qty: 2 Price: 2200.00\nTotal: 4400.00 USD"
     }
 }

@@ -41,13 +41,15 @@ fun LoginScreen(
     activity: FragmentActivity,
     onLoginSuccess: () -> Unit
 ) {
-    var baseUrl by remember { mutableStateOf("https://30145.test-acumatica.com") }
-    var clientId by remember { mutableStateOf("5833BDA4-8DF5-0A0D-7C0C-310D5600D421@Company") }
-    var clientSecret by remember { mutableStateOf("MhFwP3EGQGeV3fcrwF49wA") }
-    var username by remember { mutableStateOf("admin") }
-    var password by remember { mutableStateOf("123") }
+    var baseUrl by remember { mutableStateOf("") }
+    var clientId by remember { mutableStateOf("") }
+    var clientSecret by remember { mutableStateOf("") }
+    var username by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var apiVersion by remember { mutableStateOf("24.200.001") }
     var aiProvider by remember { mutableStateOf("GEMINI") }
     var aiKey by remember { mutableStateOf("") }
+    //var aiKey by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var isLoading by remember { mutableStateOf(false) }
 
@@ -66,6 +68,7 @@ fun LoginScreen(
         OutlinedTextField(value = clientSecret, onValueChange = { clientSecret = it }, label = { Text("Client Secret") })
         OutlinedTextField(value = username, onValueChange = { username = it }, label = { Text("ERP Username") })
         OutlinedTextField(value = password, onValueChange = { password = it }, label = { Text("Password") }, visualTransformation = PasswordVisualTransformation())
+        OutlinedTextField(value = apiVersion, onValueChange = { apiVersion = it }, label = { Text("API Version") })
 
         Spacer(modifier = Modifier.height(8.dp))
 
@@ -96,7 +99,14 @@ fun LoginScreen(
                 errorMessage = null
                 coroutineScope.launch {
                     try {
-                        val config = AcumaticaConfig(baseUrl, clientId, clientSecret, username, password)
+                        val config = AcumaticaConfig(
+                            baseUrl = baseUrl,
+                            clientId = clientId,
+                            clientSecret = clientSecret,
+                            username = username,
+                            password = password,
+                            apiVersion = apiVersion
+                        )
                         val tokenResp = restClient.loginOAuth(config)
                         securityRepo.saveConfig(
                             config = config,
