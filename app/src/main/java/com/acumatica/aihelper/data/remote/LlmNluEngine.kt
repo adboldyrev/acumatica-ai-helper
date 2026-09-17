@@ -1,6 +1,7 @@
 package com.acumatica.aihelper.data.remote
 
 import android.util.Log
+import com.acumatica.aihelper.data.repository.SecurityRepository
 import com.acumatica.aihelper.domain.models.EntitySchemaConfig
 import com.acumatica.aihelper.domain.models.ToolCall
 import kotlinx.coroutines.Dispatchers
@@ -12,15 +13,16 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 
-class LlmNluEngine(private val httpClient: OkHttpClient = OkHttpClient()) {
+class LlmNluEngine(
+    private val securityRepo: SecurityRepository,
+    private val httpClient: OkHttpClient = OkHttpClient()
+) {
 
     suspend fun parseUserPromptWithAi(
         userPrompt: String,
-        provider: String,
-        apiKey: String,
         allConfiguredEntities: List<EntitySchemaConfig>
     ): ToolCall? = withContext(Dispatchers.IO) {
-        var targetEntityName = askAiForEntityRouteOnly(userPrompt, allConfiguredEntities, provider, apiKey)
+        val targetEntityName = askAiForEntityRouteOnly(userPrompt, allConfiguredEntities)
 
         if (targetEntityName == null || targetEntityName.entityName == "Unknown") {
             return@withContext fallbackLocalParse(userPrompt, allConfiguredEntities)
@@ -29,49 +31,40 @@ class LlmNluEngine(private val httpClient: OkHttpClient = OkHttpClient()) {
             it.entityName.equals(targetEntityName.entityName, ignoreCase = true)
         } ?: return@withContext fallbackLocalParse(userPrompt, allConfiguredEntities)
 
-        val narrowSystemPrompt = generateSystemPromptForSingleEntity(userPrompt, targetEntityConfig)
+        val narrowSystemPrompt = generateSystemPromptForSingleEntity(targetEntityConfig)
         return@withContext try {
-            when (provider.uppercase()) {
-                "CLAUDE" -> parseWithClaude(userPrompt, narrowSystemPrompt, apiKey)
-                "OPENAI" -> parseWithOpenAi(userPrompt, narrowSystemPrompt, apiKey)
-                else -> parseWithGemini(userPrompt, narrowSystemPrompt, apiKey)
-            }
+            parseWithAcumaticaLlmProxy(userPrompt, narrowSystemPrompt)
         } catch (e: Exception) {
+            Log.e("parseUserPromptWithAi", "Error: ${e.message}")
             fallbackLocalParse(userPrompt, allConfiguredEntities)
         }
     }
 
     suspend fun askAiForEntityRouteOnly(
         userPrompt: String,
-        allConfiguredEntities: List<EntitySchemaConfig>,
-        provider: String,
-        apiKey: String
+        allConfiguredEntities: List<EntitySchemaConfig>
     ): ToolCall? = withContext(Dispatchers.IO) {
-        val promtForFindEntity = generateSystemPrompt(userPrompt, allConfiguredEntities)
+        val promptForFindEntity = generateSystemPrompt(allConfiguredEntities)
+        Log.i("askAiForEntityRouteOnly", promptForFindEntity)
         return@withContext try {
-            when (provider.uppercase()) {
-                "CLAUDE" -> parseWithClaude(userPrompt, promtForFindEntity, apiKey)
-                "OPENAI" -> parseWithOpenAi(userPrompt, promtForFindEntity, apiKey)
-                else -> parseWithGemini(userPrompt, promtForFindEntity, apiKey)
-            }
+            parseWithAcumaticaLlmProxy(userPrompt, promptForFindEntity)
         } catch (e: Exception) {
             fallbackLocalParse(userPrompt, allConfiguredEntities)
         }
     }
 
-    fun generateSystemPrompt(userPrompt: String, configuredEntities: List<EntitySchemaConfig>): String {
-        val enabledEntities = configuredEntities.filter { it.isEnabled }.map {it.entityName}.joinToString(", ")
+    fun generateSystemPrompt(configuredEntities: List<EntitySchemaConfig>): String {
+        val enabledEntities = configuredEntities.filter { it.isEnabled }.map { it.entityName }.joinToString(", ")
 
         return """
-            You are an API Router. Available entities: [$enabledEntities]. 
-            Based on the User Prompt, return ONLY the exact entity name from the list. If no match, return "Unknown".
-
-            User Prompt: 
-            $userPrompt
+            You are an API Router for Acumatica ERP. Available entities: [$enabledEntities]. 
+            Based on the User Prompt, return a JSON object with the key "entityName".
+            Example: {"entityName": "Customer"}
+            If no match is found, return {"entityName": "Unknown"}.
             """.trimIndent()
     }
 
-    fun generateSystemPromptForSingleEntity(userPrompt: String, entityConfig: EntitySchemaConfig): String {
+    fun generateSystemPromptForSingleEntity(entityConfig: EntitySchemaConfig): String {
         val singleSchemaJson = JSONObject().apply {
             put("entityName", entityConfig.entityName)
             put("endpointPath", entityConfig.endpointPath)
@@ -95,9 +88,6 @@ class LlmNluEngine(private val httpClient: OkHttpClient = OkHttpClient()) {
     ### TARGET ENTITY SCHEMA METADATA & DEFINITION:
     $singleSchemaJson
 
-    ### USER INPUT PROMPT:
-    "$userPrompt"
-
     ### EXPECTED OUTPUT FORMAT:
     {
       "entityName": "${entityConfig.entityName}",
@@ -113,119 +103,81 @@ class LlmNluEngine(private val httpClient: OkHttpClient = OkHttpClient()) {
     }
     """.trimIndent()
     }
-    
-    private fun parseWithGemini(userPrompt: String, systemPrompt: String, apiKey: String): ToolCall? {
-        val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=$apiKey"
+
+    private fun parseWithAcumaticaLlmProxy(
+        userPrompt: String,
+        systemPrompt: String
+    ): ToolCall? {
+        val aiEndpoint = securityRepo.getAiEndpoint() ?: return null
+        val aiSubscriptionKey = securityRepo.getAiSubscriptionKey() ?: ""
+        val aiModel = securityRepo.getAiModel()
+        val aiMaxTokens = securityRepo.getAiMaxTokens()
+
         val jsonBody = JSONObject().apply {
-            put("system_instruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", systemPrompt))))
-
-            put("contents", JSONArray().put(
-                JSONObject().put("parts", JSONArray().put(
-                    JSONObject().put("text", userPrompt)
-                ))
-            ))
-
-            put("generationConfig", JSONObject().apply {
-                put("responseMimeType", "application/json")
-            })
-        }
-
-        val request = Request.Builder()
-            .url(url)
-            .post(jsonBody.toString().toRequestBody("application/json".toMediaType()))
-            .build()
-
-        httpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                Log.e("GeminiNlu", "API Error: ${response.code} - ${response.body?.string()}")
-                return null
-            }
-            val responseStr = response.body?.string() ?: return null
-            val jsonRoot = JSONObject(responseStr)
-            val textCandidate = jsonRoot.optJSONArray("candidates")
-                ?.optJSONObject(0)
-                ?.optJSONObject("content")
-                ?.optJSONArray("parts")
-                ?.optJSONObject(0)
-                ?.optString("text", "") ?: ""
-
-            return extractToolCallFromJsonText(textCandidate)
-        }
-    }
-
-    private fun parseWithClaude(userPromt: String, systemPrompt: String, apiKey: String): ToolCall? {
-        val url = "https://api.anthropic.com/v1/messages"
-        val jsonBody = JSONObject().apply {
-            put("model", "claude-3-5-sonnet-20241022")
-            put("max_tokens", 500)
+            put("model", aiModel)
             put("system", systemPrompt)
-            put("messages", JSONArray().put(JSONObject().apply {
-                put("role", "user")
-                put("content", userPromt)
-            }))
-        }
-
-        val request = Request.Builder()
-            .url(url)
-            .addHeader("x-api-key", apiKey)
-            .addHeader("anthropic-version", "2023-06-01")
-            .addHeader("anthropic-dangerous-direct-browser-access", "true")
-            .post(jsonBody.toString().toRequestBody("application/json".toMediaType()))
-            .build()
-
-        httpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) return null
-            val responseStr = response.body?.string() ?: return null
-            val jsonRoot = JSONObject(responseStr)
-            val contentArr = jsonRoot.optJSONArray("content") ?: return null
-            val text = contentArr.optJSONObject(0)?.optString("text", "") ?: ""
-            return extractToolCallFromJsonText(text)
-        }
-    }
-
-    private fun parseWithOpenAi(userPrompt: String, systemPrompt: String, apiKey: String): ToolCall? {
-        val url = "https://api.openai.com/v1/chat/completions"
-        val jsonBody = JSONObject().apply {
-            put("model", "gpt-4o-mini")
-            put("response_format", JSONObject().put("type", "json_object"))
             put("messages", JSONArray().apply {
-                put(JSONObject().put("role", "system").put("content", systemPrompt))
                 put(JSONObject().put("role", "user").put("content", userPrompt))
             })
+            put("max_tokens", aiMaxTokens)
         }
 
         val request = Request.Builder()
-            .url(url)
-            .addHeader("Authorization", "Bearer $apiKey")
-            .header("Content-Type", "application/json")
+            .url(aiEndpoint)
+            .addHeader("Ocp-Apim-Subscription-Key", aiSubscriptionKey)
+            .addHeader("Content-Type", "application/json")
             .post(jsonBody.toString().toRequestBody("application/json".toMediaType()))
             .build()
 
         httpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                Log.e("OpenAiNlu", "API Error: ${response.code} - ${response.body?.string()}")
-                return null
-            }
             val responseStr = response.body?.string() ?: return null
+            if (!response.isSuccessful) {
+                Log.e("AcumaticaProxyNlu", "API Error: ${response.code} - $responseStr")
+                return null
+            } else {
+                Log.i("AcumaticaProxyNlu", "API Success: ${response.code} - $responseStr")
+            }
+
             val jsonRoot = JSONObject(responseStr)
-            val text = jsonRoot.optJSONArray("choices")
-                ?.optJSONObject(0)
-                ?.optJSONObject("message")
-                ?.optString("content", "") ?: ""
+            // Handle both Anthropic and OpenAI/Azure response formats
+            val text = if (jsonRoot.has("content") && jsonRoot.get("content") is JSONArray) {
+                // Anthropic format
+                val contentArr = jsonRoot.getJSONArray("content")
+                if (contentArr.length() > 0) {
+                    contentArr.getJSONObject(0).optString("text", "")
+                } else ""
+            } else {
+                // OpenAI/Azure format
+                jsonRoot.optJSONArray("choices")
+                    ?.optJSONObject(0)
+                    ?.optJSONObject("message")
+                    ?.optString("content", "") ?: ""
+            }
             return extractToolCallFromJsonText(text)
         }
     }
 
     private fun extractToolCallFromJsonText(rawText: String): ToolCall? {
         val cleanJson = rawText.replace("```json", "").replace("```", "").trim()
-        val jsonObj = runCatching { JSONObject(cleanJson) }.getOrNull() ?: return null
+        val jsonObj = runCatching { JSONObject(cleanJson) }.getOrNull() 
+            ?: return if (cleanJson.length in 3..30 && !cleanJson.contains("{")) {
+                // If it's just a plain entity name string
+                ToolCall(
+                    name = "get_$cleanJson",
+                    entityName = cleanJson,
+                    method = "GET",
+                    recordKey = null,
+                    payload = null,
+                    endpointPath = cleanJson
+                )
+            } else null
 
         val entityName = jsonObj.optString("entityName", null) ?: return null
         val method = jsonObj.optString("method", "GET")
         val recordKey = if (jsonObj.has("recordKey") && !jsonObj.isNull("recordKey")) jsonObj.getString("recordKey") else null
         val payload = jsonObj.optJSONObject("payload")
 
-        val endpointPath = jsonObj.optString("endpointPath", "/$entityName")
+        val endpointPath = jsonObj.optString("endpointPath", entityName).trimStart('/')
 
         return ToolCall(
             name = "${method.lowercase()}_$entityName",
@@ -287,25 +239,20 @@ class LlmNluEngine(private val httpClient: OkHttpClient = OkHttpClient()) {
     fun generateNaturalLanguageResponse(
         userPrompt: String,
         entityName: String,
-        jsonResult: String,
-        provider: String,
-        apiKey: String
+        jsonResult: String
     ): String {
-        if (apiKey.isBlank()) {
+        val aiSubscriptionKey = securityRepo.getAiSubscriptionKey()
+        if (aiSubscriptionKey.isNullOrBlank()) {
             return "Acumatica ERP Result ($entityName):$jsonResult"
         }
 
         return try {
             val systemPrompt = """
-                You are an Acumatica ERP AI assistant. The user asked: '$1'. Acumatica ERP returned a JSON response of $2 for the entity '$3'. 
+                You are an Acumatica ERP AI assistant. The user asked: '$userPrompt'. Acumatica ERP returned a JSON response of $jsonResult for the entity '$entityName'. 
                 Formulate a short, clear, and polite response in Russian based on this data. Briefly list the key metrics.
-            """.trimIndent().format(userPrompt, jsonResult, entityName)
+            """.trimIndent()
 
-            val aiText = when (provider.uppercase()) {
-                "CLAUDE" -> generateWithClaude(systemPrompt, apiKey)
-                "OPENAI" -> generateWithOpenAi(systemPrompt, apiKey)
-                else -> generateWithGemini(systemPrompt, apiKey)
-            }
+            val aiText = generateWithAcumaticaLlmProxy(systemPrompt)
 
             if (!aiText.isNullOrBlank()) {
                 "$aiText 📊 [Raw JSON ($entityName)]:$jsonResult"
@@ -317,80 +264,53 @@ class LlmNluEngine(private val httpClient: OkHttpClient = OkHttpClient()) {
         }
     }
 
-    private fun generateWithGemini(systemPrompt: String, apiKey: String): String? {
-        val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$apiKey"
+    private fun generateWithAcumaticaLlmProxy(
+        systemPrompt: String
+    ): String? {
+        val aiEndpoint = securityRepo.getAiEndpoint() ?: return null
+        val aiSubscriptionKey = securityRepo.getAiSubscriptionKey() ?: ""
+        val aiModel = securityRepo.getAiModel()
+        val aiMaxTokens = securityRepo.getAiMaxTokens()
+
         val jsonBody = JSONObject().apply {
-            put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", systemPrompt)))))
-        }
-        val request = Request.Builder()
-            .url(url)
-            .post(jsonBody.toString().toRequestBody("application/json".toMediaType()))
-            .build()
-
-        return httpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) return null
-            val responseStr = response.body?.string() ?: return null
-            val jsonRoot = JSONObject(responseStr)
-            jsonRoot.optJSONArray("candidates")
-                ?.optJSONObject(0)
-                ?.optJSONObject("content")
-                ?.optJSONArray("parts")
-                ?.optJSONObject(0)
-                ?.optString("text", null)
-        }
-    }
-
-    private fun generateWithClaude(systemPrompt: String, apiKey: String): String? {
-        val url = "https://api.anthropic.com/v1/messages"
-        val jsonBody = JSONObject().apply {
-            put("model", "claude-3-5-sonnet-20241022")
-            put("max_tokens", 1000)
-            put("messages", JSONArray().put(JSONObject().apply {
-                put("role", "user")
-                put("content", systemPrompt)
-            }))
-        }
-        val request = Request.Builder()
-            .url(url)
-            .addHeader("x-api-key", apiKey)
-            .addHeader("anthropic-version", "2023-06-01")
-            .addHeader("anthropic-dangerous-direct-browser-access", "true")
-            .post(jsonBody.toString().toRequestBody("application/json".toMediaType()))
-            .build()
-
-        return httpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) return null
-            val responseStr = response.body?.string() ?: return null
-            val jsonRoot = JSONObject(responseStr)
-            jsonRoot.optJSONArray("content")
-                ?.optJSONObject(0)
-                ?.optString("text", null)
-        }
-    }
-
-    private fun generateWithOpenAi(systemPrompt: String, apiKey: String): String? {
-        val url = "https://api.openai.com/v1/chat/completions"
-        val jsonBody = JSONObject().apply {
-            put("model", "gpt-4o")
+            put("model", aiModel)
+            put("system", systemPrompt)
             put("messages", JSONArray().apply {
-                put(JSONObject().put("role", "system").put("content", "You are an Acumatica ERP AI assistant."))
-                put(JSONObject().put("role", "user").put("content", systemPrompt))
+                put(JSONObject().put("role", "user").put("content", "Generate natural language summary for the provided ERP data."))
             })
+            put("max_tokens", aiMaxTokens)
         }
+
         val request = Request.Builder()
-            .url(url)
-            .addHeader("Authorization", "Bearer $apiKey")
+            .url(aiEndpoint)
+            .addHeader("Ocp-Apim-Subscription-Key", aiSubscriptionKey)
+            .addHeader("Content-Type", "application/json")
             .post(jsonBody.toString().toRequestBody("application/json".toMediaType()))
             .build()
 
         return httpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) return null
             val responseStr = response.body?.string() ?: return null
+            if (!response.isSuccessful) {
+                Log.e("AcumaticaProxyNL", "API Error: ${response.code} - $responseStr")
+                return null
+            } else {
+                Log.i("AcumaticaProxyNL", "API Success: ${response.code} - $responseStr")
+            }
+
             val jsonRoot = JSONObject(responseStr)
-            jsonRoot.optJSONArray("choices")
-                ?.optJSONObject(0)
-                ?.optJSONObject("message")
-                ?.optString("content", null)
+            if (jsonRoot.has("content") && jsonRoot.get("content") is JSONArray) {
+                // Anthropic format
+                val contentArr = jsonRoot.getJSONArray("content")
+                if (contentArr.length() > 0) {
+                    contentArr.getJSONObject(0).optString("text", null)
+                } else null
+            } else {
+                // OpenAI/Azure format
+                jsonRoot.optJSONArray("choices")
+                    ?.optJSONObject(0)
+                    ?.optJSONObject("message")
+                    ?.optString("content", null)
+            }
         }
     }
 }

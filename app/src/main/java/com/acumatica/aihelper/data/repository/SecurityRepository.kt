@@ -29,8 +29,10 @@ class SecurityRepository(context: Context) {
         accessToken: String,
         refreshToken: String?,
         expiresInSeconds: Long,
-        aiProvider: String,
-        aiKey: String
+        aiEndpoint: String? = null,
+        aiSubscriptionKey: String? = null,
+        aiModel: String? = null,
+        aiMaxTokens: Int? = null
     ) {
         val expiresAt = System.currentTimeMillis() + (expiresInSeconds * 1000)
         prefs.edit()
@@ -43,10 +45,19 @@ class SecurityRepository(context: Context) {
             .putString("accessToken", accessToken)
             .putString("refreshToken", refreshToken ?: "")
             .putLong("expiresAt", expiresAt)
-            .putString("aiProvider", aiProvider)
-            .putString("aiKey", aiKey)
+            .apply {
+                if (aiEndpoint != null) putString("aiEndpoint", aiEndpoint)
+                if (aiSubscriptionKey != null) putString("aiSubscriptionKey", aiSubscriptionKey)
+                if (aiModel != null) putString("aiModel", aiModel)
+                if (aiMaxTokens != null) putInt("aiMaxTokens", aiMaxTokens)
+            }
             .apply()
     }
+
+    fun getAiEndpoint(): String? = prefs.getString("aiEndpoint", null)
+    fun getAiSubscriptionKey(): String? = prefs.getString("aiSubscriptionKey", null)
+    fun getAiModel(): String = prefs.getString("aiModel", "claude-sonnet-4-6") ?: "claude-sonnet-4-6"
+    fun getAiMaxTokens(): Int = prefs.getInt("aiMaxTokens", 1000)
 
     fun updateTokens(accessToken: String, refreshToken: String?, expiresInSeconds: Long) {
         val expiresAt = System.currentTimeMillis() + (expiresInSeconds * 1000)
@@ -76,8 +87,6 @@ class SecurityRepository(context: Context) {
     }
 
     fun getAccessToken(): String? = prefs.getString("accessToken", null)
-    fun getAiProvider(): String = prefs.getString("aiProvider", "GEMINI") ?: "GEMINI"
-    fun getAiKey(): String = prefs.getString("aiKey", "") ?: ""
 
     fun saveEntityConfigs(configs: List<EntitySchemaConfig>) {
         val jsonObj = JSONObject()

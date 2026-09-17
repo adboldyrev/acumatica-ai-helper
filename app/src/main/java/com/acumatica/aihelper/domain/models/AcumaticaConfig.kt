@@ -6,5 +6,5 @@ data class AcumaticaConfig(
     val clientSecret: String,
     val username: String,
     val password: String,
-    val apiVersion: String = "24.200.001"
+    val apiVersion: String
 )

@@ -64,12 +64,36 @@ class AcumaticaRestClient(private val httpClient: OkHttpClient = OkHttpClient())
         }
     }
 
-    suspend fun downloadSwaggerOas(baseUrl: String, endpointVersion: String = "24.200.001"): String = withContext(Dispatchers.IO) {
-        val swaggerUrl = "$baseUrl/entity/Default/$endpointVersion/swagger.json"
-        val request = Request.Builder().url(swaggerUrl).get().build()
-        httpClient.newCall(request).execute().use { response ->
+    suspend fun downloadSwaggerOas(baseUrl: String, endpointVersion: String = "24.200.001", accessToken: String? = null): String = withContext(Dispatchers.IO) {
+        val cleanBaseUrl = baseUrl.trimEnd('/')
+        val swaggerUrl = "$cleanBaseUrl/entity/Default/$endpointVersion/swagger.json"
+        Log.i("AcumaticaClient", "Downloading OAS from: $swaggerUrl")
+        
+        val requestBuilder = Request.Builder().url(swaggerUrl).get()
+        accessToken?.let {
+            requestBuilder.addHeader("Authorization", "Bearer $it")
+        }
+        
+        httpClient.newCall(requestBuilder.build()).execute().use { response ->
             if (!response.isSuccessful) throw Exception("OAS Download Error (${response.code})")
             response.body?.string() ?: "{}"
+        }
+    }
+
+    suspend fun getLlmConnection(baseUrl: String, accessToken: String, apiVersion: String): JSONObject? = withContext(Dispatchers.IO) {
+        val url = "$baseUrl/entity/LLMConnections/$apiVersion/LLMConnection?\$expand=Parameters"
+        val request = Request.Builder()
+            .url(url)
+            .addHeader("Authorization", "Bearer $accessToken")
+            .addHeader("Accept", "application/json")
+            .get()
+            .build()
+
+        httpClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) return@withContext null
+            val body = response.body?.string() ?: return@withContext null
+            val array = JSONArray(body)
+            if (array.length() > 0) array.getJSONObject(0) else null
         }
     }
 
@@ -140,14 +164,13 @@ class AcumaticaRestClient(private val httpClient: OkHttpClient = OkHttpClient())
     }
 
     suspend fun executeMutation(
-        baseUrl: String,
+        url: String,
         accessToken: String,
         entityName: String,
         method: String,
         recordKey: String?,
         jsonPayload: JSONObject
     ): String = withContext(Dispatchers.IO) {
-        val url = "$baseUrl/entity/Default/24.200.001/$entityName"
         val mediaType = "application/json".toMediaType()
         val body = jsonPayload.toString().toRequestBody(mediaType)
 
@@ -175,13 +198,14 @@ class AcumaticaRestClient(private val httpClient: OkHttpClient = OkHttpClient())
 
     suspend fun uploadAttachment(
         baseUrl: String,
+        apiVersion: String,
         accessToken: String,
         entityName: String,
         recordKey: String,
         fileName: String,
         imageBytes: ByteArray
     ): Boolean = withContext(Dispatchers.IO) {
-        val recordUrl = "$baseUrl/entity/Default/24.200.001/$entityName/$recordKey?\$expand=files"
+        val recordUrl = "$baseUrl/entity/Default/$apiVersion/$entityName/$recordKey?\$expand=files"
         val getRequest = Request.Builder()
             .url(recordUrl)
             .addHeader("Authorization", "Bearer $accessToken")
@@ -193,7 +217,7 @@ class AcumaticaRestClient(private val httpClient: OkHttpClient = OkHttpClient())
             if (!response.isSuccessful) return@use null
             val json = JSONObject(response.body?.string() ?: "{}")
             json.optJSONObject("_links")?.optString("files:put", null)
-        } ?: "/entity/Default/24.200.001/files/PX.Objects.IN.InventoryItemMaint/Item/{recordKey}/$fileName"
+        } ?: "/entity/Default/$apiVersion/files/PX.Objects.IN.InventoryItemMaint/Item/{recordKey}/$fileName"
 
         val uploadUrl = if (putTemplateLink.startsWith("http")) {
             putTemplateLink.replace("{filename}", fileName)

@@ -41,15 +41,13 @@ fun LoginScreen(
     activity: FragmentActivity,
     onLoginSuccess: () -> Unit
 ) {
-    var baseUrl by remember { mutableStateOf("") }
-    var clientId by remember { mutableStateOf("") }
-    var clientSecret by remember { mutableStateOf("") }
-    var username by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
+    var baseUrl by remember { mutableStateOf("https://30033.test-acumatica.com") }
+    var clientId by remember { mutableStateOf("74D576B3-2EA7-88F1-464C-FDCC7CFB7618@Company") }
+    var clientSecret by remember { mutableStateOf("AxfAEqq_dBXlmBtK-EexXA") }
+    var username by remember { mutableStateOf("admin") }
+    var password by remember { mutableStateOf("123") }
     var apiVersion by remember { mutableStateOf("24.200.001") }
-    var aiProvider by remember { mutableStateOf("GEMINI") }
-    var aiKey by remember { mutableStateOf("") }
-    //var aiKey by remember { mutableStateOf("") }
+    // AI configuration will be fetched from server
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var isLoading by remember { mutableStateOf(false) }
 
@@ -70,26 +68,6 @@ fun LoginScreen(
         OutlinedTextField(value = password, onValueChange = { password = it }, label = { Text("Password") }, visualTransformation = PasswordVisualTransformation())
         OutlinedTextField(value = apiVersion, onValueChange = { apiVersion = it }, label = { Text("API Version") })
 
-        Spacer(modifier = Modifier.height(8.dp))
-
-        Text("AI Agent (NLU Parsing):", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-            listOf("GEMINI", "CLAUDE", "OPENAI").forEach { provider ->
-                FilterChip(
-                    selected = (aiProvider == provider),
-                    onClick = { aiProvider = provider },
-                    label = { Text(provider) }
-                )
-            }
-        }
-
-        OutlinedTextField(
-            value = aiKey,
-            onValueChange = { aiKey = it },
-            label = { Text("API Key ($aiProvider)") },
-            visualTransformation = PasswordVisualTransformation()
-        )
-
         Spacer(modifier = Modifier.height(16.dp))
 
         Button(
@@ -108,19 +86,48 @@ fun LoginScreen(
                             apiVersion = apiVersion
                         )
                         val tokenResp = restClient.loginOAuth(config)
+                        
+                        // Fetch LLM Connection from server
+                        val llmConnection = restClient.getLlmConnection(config.baseUrl, tokenResp.accessToken, apiVersion)
+
+                        var aiEndpoint: String? = null
+                        var aiSubscriptionKey: String? = null
+                        var aiModel: String? = null
+                        var aiMaxTokens: Int? = null
+                        
+                        llmConnection?.let { conn ->
+                            val params = conn.optJSONArray("Parameters")
+                            if (params != null) {
+                                for (i in 0 until params.length()) {
+                                    val p = params.getJSONObject(i)
+                                    val paramId = p.optJSONObject("ParameterID")?.optString("value")
+                                    val paramValue = p.optJSONObject("Value")?.optString("value")
+                                    
+                                    when (paramId) {
+                                        "target-uri" -> aiEndpoint = paramValue
+                                        "Ocp-Apim-Subscription-Key" -> aiSubscriptionKey = paramValue
+                                        "model" -> aiModel = paramValue
+                                        "max_tokens" -> aiMaxTokens = paramValue?.toIntOrNull()
+                                    }
+                                }
+                            }
+                        }
+
                         securityRepo.saveConfig(
                             config = config,
                             accessToken = tokenResp.accessToken,
                             refreshToken = tokenResp.refreshToken,
                             expiresInSeconds = tokenResp.expiresIn,
-                            aiProvider = aiProvider,
-                            aiKey = aiKey
+                            aiEndpoint = aiEndpoint,
+                            aiSubscriptionKey = aiSubscriptionKey,
+                            aiModel = aiModel,
+                            aiMaxTokens = aiMaxTokens
                         )
                         isLoading = false
                         onLoginSuccess()
                     } catch (e: Exception) {
                         isLoading = false
-                        errorMessage = "OAuth login failed: ${e.message}"
+                        errorMessage = "Login failed: ${e.message}"
                     }
                 }
             }

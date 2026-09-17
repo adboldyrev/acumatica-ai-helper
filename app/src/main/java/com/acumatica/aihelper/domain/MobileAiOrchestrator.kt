@@ -26,7 +26,7 @@ class MobileAiOrchestrator(
     private val chatDao: ChatDao,
     private val ocrManager: OcrTextRecognizerManager,
     private val swaggerParser: SwaggerSchemaParser = SwaggerSchemaParser(),
-    private val llmNluEngine: LlmNluEngine = LlmNluEngine()
+    private val llmNluEngine: LlmNluEngine = LlmNluEngine(securityRepo)
 ) {
     private suspend fun ensureValidToken(config: AcumaticaConfig): String? {
         if (!securityRepo.isTokenExpired()) {
@@ -76,23 +76,28 @@ class MobileAiOrchestrator(
 
     suspend fun fetchAndApplySwaggerSchema(): String = withContext(Dispatchers.IO) {
         val config = securityRepo.getConfig() ?: return@withContext "Error: Please log in first."
-        val swaggerJsonStr = restClient.downloadSwaggerOas(config.baseUrl)
-        
-        val extendedSchemas = swaggerParser.parseSwaggerJsonExtended(swaggerJsonStr)
-        
-        val baseSchemas = extendedSchemas.mapValues { it.value.fields }
-        val loadedConfigs = securityRepo.getEntityConfigs(baseSchemas)
-        
-        val enrichedConfigs = loadedConfigs.map { cfg ->
-            val ext = extendedSchemas[cfg.entityName]
-            if (ext != null) {
-                cfg.copy(endpointPath = ext.endpointPath, keyField = ext.keyField)
-            } else cfg
+        val token = securityRepo.getAccessToken()
+        try {
+            val swaggerJsonStr = restClient.downloadSwaggerOas(config.baseUrl, config.apiVersion, token)
+            
+            val extendedSchemas = swaggerParser.parseSwaggerJsonExtended(swaggerJsonStr)
+            
+            val baseSchemas = extendedSchemas.mapValues { it.value.fields }
+            val loadedConfigs = securityRepo.getEntityConfigs(baseSchemas)
+            
+            val enrichedConfigs = loadedConfigs.map { cfg ->
+                val ext = extendedSchemas[cfg.entityName]
+                if (ext != null) {
+                    cfg.copy(endpointPath = ext.endpointPath, keyField = ext.keyField)
+                } else cfg
+            }
+            
+            configuredEntities = enrichedConfigs
+            securityRepo.saveEntityConfigs(enrichedConfigs)
+            "Successfully loaded entities from OAS: ${enrichedConfigs.size}"
+        } catch (e: Exception) {
+            "OAS Update Error: ${e.message}"
         }
-        
-        configuredEntities = enrichedConfigs
-        securityRepo.saveEntityConfigs(enrichedConfigs)
-        "Successfully loaded entities from OAS: ${enrichedConfigs.size}"
     }
 
     fun updateEntityConfigs(newConfigs: List<EntitySchemaConfig>) {
@@ -211,6 +216,7 @@ class MobileAiOrchestrator(
 
         val success = restClient.uploadAttachment(
             baseUrl = config.baseUrl,
+            apiVersion = config.apiVersion,
             accessToken = token,
             entityName = entityName,
             recordKey = recordKey,
@@ -264,13 +270,8 @@ class MobileAiOrchestrator(
     ): String {
         val config = securityRepo.getConfig() ?: return "Error: No configuration found."
 
-        val provider = securityRepo.getAiProvider()
-        val aiKey = securityRepo.getAiKey()
-
         val toolCall = llmNluEngine.parseUserPromptWithAi(
             userPrompt = prompt,
-            provider = provider,
-            apiKey = aiKey,
             allConfiguredEntities = configuredEntities
         ) ?: run {
             val responseText = "AI could not determine intent or Acumatica ERP entity. Ensure the required entity is enabled in OpenAPI Schema settings."
@@ -298,17 +299,19 @@ class MobileAiOrchestrator(
         val entityConfig = configuredEntities.find { it.entityName.equals(toolCall.entityName, ignoreCase = true) }
         val selectedFields = entityConfig?.selectedFields ?: emptySet()
 
+        val normalizedPath = toolCall.endpointPath?.trimStart('/') ?: toolCall.entityName
+
         val requestUrl = if (!toolCall.recordKey.isNullOrBlank()) {
-            "${config.baseUrl}/entity/Default/${config.apiVersion}/${toolCall.endpointPath}/${toolCall.recordKey}"
+            "${config.baseUrl}/entity/Default/${config.apiVersion}/$normalizedPath/${toolCall.recordKey}"
         } else {
-            "${config.baseUrl}/entity/Default/${config.apiVersion}/${toolCall.endpointPath}"
+            "${config.baseUrl}/entity/Default/${config.apiVersion}/$normalizedPath"
         }
 
         return try {
             val token = ensureValidToken(config) ?: return "Error: Authentication failed."
             val rawResult: String = if (isMutation) {
                 restClient.executeMutation(
-                    baseUrl = requestUrl,
+                    url = requestUrl,
                     accessToken = token,
                     entityName = toolCall.entityName,
                     method = toolCall.method,
@@ -336,11 +339,9 @@ class MobileAiOrchestrator(
             val naturalAnswer = llmNluEngine.generateNaturalLanguageResponse(
                 userPrompt = prompt,
                 entityName = toolCall.entityName,
-                jsonResult = finalJsonResult,
-                provider = provider,
-                apiKey = aiKey
+                jsonResult = finalJsonResult
             )
-            val formattedAnswer = "🤖 Ответ ИИ ($provider -> ${toolCall.entityName}): $naturalAnswer"
+            val formattedAnswer = "🤖 Acumatica AI (${toolCall.entityName}): $naturalAnswer"
             chatDao.insertMessage(
                 ChatMessageEntity(
                     sender = "bot",
