@@ -1,37 +1,23 @@
 package com.acumatica.aihelper.ui.screens
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.fragment.app.FragmentActivity
 import com.acumatica.aihelper.data.remote.AcumaticaRestClient
 import com.acumatica.aihelper.data.repository.SecurityRepository
 import com.acumatica.aihelper.domain.models.AcumaticaConfig
+import com.acumatica.aihelper.ui.theme.AcumaticaAIHelperTheme
 import kotlinx.coroutines.launch
 
 @Composable
@@ -47,112 +33,144 @@ fun LoginScreen(
     var username by remember { mutableStateOf("admin") }
     var password by remember { mutableStateOf("123") }
     var apiVersion by remember { mutableStateOf("24.200.001") }
-    // AI configuration will be fetched from server
+    
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var isLoading by remember { mutableStateOf(false) }
 
     val coroutineScope = rememberCoroutineScope()
 
-    Column(
-        modifier = Modifier.fillMaxSize().padding(16.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Text("Acumatica Universal AI Bot", fontSize = 22.sp, fontWeight = FontWeight.Bold)
-        Spacer(modifier = Modifier.height(16.dp))
+    AcumaticaAIHelperTheme {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(24.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "Acumatica AI Assistant",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = "Please log in to continue",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+                    modifier = Modifier.padding(top = 8.dp, bottom = 32.dp)
+                )
 
-        OutlinedTextField(value = baseUrl, onValueChange = { baseUrl = it }, label = { Text("Acumatica URL") })
-        OutlinedTextField(value = clientId, onValueChange = { clientId = it }, label = { Text("Client ID") })
-        OutlinedTextField(value = clientSecret, onValueChange = { clientSecret = it }, label = { Text("Client Secret") })
-        OutlinedTextField(value = username, onValueChange = { username = it }, label = { Text("ERP Username") })
-        OutlinedTextField(value = password, onValueChange = { password = it }, label = { Text("Password") }, visualTransformation = PasswordVisualTransformation())
-        OutlinedTextField(value = apiVersion, onValueChange = { apiVersion = it }, label = { Text("API Version") })
+                LoginTextField(value = baseUrl, onValueChange = { baseUrl = it }, label = "Acumatica URL")
+                LoginTextField(value = clientId, onValueChange = { clientId = it }, label = "Client ID")
+                LoginTextField(value = clientSecret, onValueChange = { clientSecret = it }, label = "Client Secret")
+                LoginTextField(value = username, onValueChange = { username = it }, label = "ERP Username")
+                LoginTextField(value = password, onValueChange = { password = it }, label = "Password", isPassword = true)
+                LoginTextField(value = apiVersion, onValueChange = { apiVersion = it }, label = "API Version")
 
-        Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(32.dp))
 
-        Button(
-            enabled = !isLoading,
-            onClick = {
-                isLoading = true
-                errorMessage = null
-                coroutineScope.launch {
-                    try {
-                        val config = AcumaticaConfig(
-                            baseUrl = baseUrl,
-                            clientId = clientId,
-                            clientSecret = clientSecret,
-                            username = username,
-                            password = password,
-                            apiVersion = apiVersion
-                        )
-                        val tokenResp = restClient.loginOAuth(config)
-                        
-                        // Fetch LLM Connection from server
-                        val llmConnection = restClient.getLlmConnection(config.baseUrl, tokenResp.accessToken, apiVersion)
-
-                        var aiEndpoint: String? = null
-                        var aiSubscriptionKey: String? = null
-                        var aiModel: String? = null
-                        var aiMaxTokens: Int? = null
-                        
-                        llmConnection?.let { conn ->
-                            val params = conn.optJSONArray("Parameters")
-                            if (params != null) {
-                                for (i in 0 until params.length()) {
-                                    val p = params.getJSONObject(i)
-                                    val paramId = p.optJSONObject("ParameterID")?.optString("value")
-                                    val paramValue = p.optJSONObject("Value")?.optString("value")
-                                    
-                                    when (paramId) {
-                                        "target-uri" -> aiEndpoint = paramValue
-                                        "Ocp-Apim-Subscription-Key" -> aiSubscriptionKey = paramValue
-                                        "model" -> aiModel = paramValue
-                                        "max_tokens" -> aiMaxTokens = paramValue?.toIntOrNull()
+                Button(
+                    modifier = Modifier.fillMaxWidth().height(50.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    enabled = !isLoading,
+                    onClick = {
+                        isLoading = true
+                        errorMessage = null
+                        coroutineScope.launch {
+                            try {
+                                val sanitizedBaseUrl = baseUrl.trim().trimEnd('/')
+                                val config = AcumaticaConfig(
+                                    baseUrl = sanitizedBaseUrl,
+                                    clientId = clientId.trim(),
+                                    clientSecret = clientSecret.trim(),
+                                    username = username.trim(),
+                                    password = password, // Don't trim password
+                                    apiVersion = apiVersion.trim()
+                                )
+                                val tokenResp = restClient.loginOAuth(config)
+                                
+                                val llmConnection = restClient.getLlmConnection(config.baseUrl, tokenResp.accessToken, apiVersion.trim())
+                                var aiEndpoint: String? = null
+                                var aiSubscriptionKey: String? = null
+                                var aiModel: String? = null
+                                var aiMaxTokens: Int? = null
+                                
+                                llmConnection?.let { conn ->
+                                    val params = conn.optJSONArray("Parameters")
+                                    if (params != null) {
+                                        for (i in 0 until params.length()) {
+                                            val p = params.getJSONObject(i)
+                                            val paramId = p.optJSONObject("ParameterID")?.optString("value")
+                                            val paramValue = p.optJSONObject("Value")?.optString("value")
+                                            when (paramId) {
+                                                "target-uri" -> aiEndpoint = paramValue
+                                                "Ocp-Apim-Subscription-Key" -> aiSubscriptionKey = paramValue
+                                                "model" -> aiModel = paramValue
+                                                "max_tokens" -> aiMaxTokens = paramValue?.toIntOrNull()
+                                            }
+                                        }
                                     }
+                                }
+
+                                securityRepo.saveConfig(config, tokenResp.accessToken, tokenResp.refreshToken, tokenResp.expiresIn, aiEndpoint, aiSubscriptionKey, aiModel, aiMaxTokens)
+                                isLoading = false
+                                onLoginSuccess()
+                            } catch (e: Exception) {
+                                isLoading = false
+                                e.printStackTrace()
+                                val message = e.message ?: "Unknown error"
+                                errorMessage = if (message.contains("Unable to resolve host")) {
+                                    "Network Error: DNS failure inside emulator. Please try 'Cold Boot' of the emulator or check internet connection."
+                                } else {
+                                    "Login failed: $message"
                                 }
                             }
                         }
-
-                        securityRepo.saveConfig(
-                            config = config,
-                            accessToken = tokenResp.accessToken,
-                            refreshToken = tokenResp.refreshToken,
-                            expiresInSeconds = tokenResp.expiresIn,
-                            aiEndpoint = aiEndpoint,
-                            aiSubscriptionKey = aiSubscriptionKey,
-                            aiModel = aiModel,
-                            aiMaxTokens = aiMaxTokens
-                        )
-                        isLoading = false
-                        onLoginSuccess()
-                    } catch (e: Exception) {
-                        isLoading = false
-                        errorMessage = "Login failed: ${e.message}"
+                    }
+                ) {
+                    if (isLoading) {
+                        CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color.White, strokeWidth = 2.dp)
+                    } else {
+                        Text("Log In", fontWeight = FontWeight.Bold)
                     }
                 }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                OutlinedButton(
+                    modifier = Modifier.fillMaxWidth().height(50.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    onClick = {
+                        securityRepo.authenticateBiometrics(activity, onLoginSuccess, { errorMessage = it })
+                    }
+                ) {
+                    Text("Biometric Sign In")
+                }
+
+                errorMessage?.let {
+                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 16.dp))
+                }
             }
-        ) {
-            if (isLoading) {
-                CircularProgressIndicator(modifier = Modifier.size(18.dp), color = Color.White)
-            } else {
-                Text("Log in via OAuth 2.0")
-            }
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        OutlinedButton(onClick = {
-            securityRepo.authenticateBiometrics(
-                activity = activity,
-                onSuccess = { onLoginSuccess() },
-                onError = { errorMessage = it }
-            )
-        }) {
-            Text("Login with Fingerprint / Face ID")
-        }
-
-        errorMessage?.let {
-            Text(it, color = Color.Red, modifier = Modifier.padding(top = 8.dp))
         }
     }
+}
+
+@Composable
+fun LoginTextField(value: String, onValueChange: (String) -> Unit, label: String, isPassword: Boolean = false) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label) },
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        shape = RoundedCornerShape(12.dp),
+        singleLine = true,
+        visualTransformation = if (isPassword) PasswordVisualTransformation() else VisualTransformation.None,
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = MaterialTheme.colorScheme.primary,
+            unfocusedBorderColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.1f)
+        )
+    )
 }

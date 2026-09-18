@@ -176,6 +176,17 @@ class LlmNluEngine(
         val method = jsonObj.optString("method", "GET")
         val recordKey = if (jsonObj.has("recordKey") && !jsonObj.isNull("recordKey")) jsonObj.getString("recordKey") else null
         val payload = jsonObj.optJSONObject("payload")
+        
+        val queryParams = mutableMapOf<String, String?>()
+        jsonObj.optJSONObject("queryParams")?.let { qp ->
+            val keys = qp.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                if (!qp.isNull(k)) {
+                    queryParams[k] = qp.optString(k)
+                }
+            }
+        }
 
         val endpointPath = jsonObj.optString("endpointPath", entityName).trimStart('/')
 
@@ -185,7 +196,8 @@ class LlmNluEngine(
             endpointPath = endpointPath,
             method = method,
             recordKey = recordKey,
-            payload = payload
+            payload = payload,
+            queryParams = if (queryParams.isNotEmpty()) queryParams else null
         )
     }
 

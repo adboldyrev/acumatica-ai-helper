@@ -2,6 +2,7 @@ package com.acumatica.aihelper
 
 import android.os.Bundle
 import androidx.activity.compose.setContent
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.fragment.app.FragmentActivity
 import com.acumatica.aihelper.data.local.AppDatabase
 import com.acumatica.aihelper.data.remote.AcumaticaRestClient
@@ -22,6 +23,7 @@ class MainActivity : FragmentActivity() {
     private lateinit var orchestrator: MobileAiOrchestrator
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        installSplashScreen()
         super.onCreate(savedInstanceState)
 
         // Initialize local storage and security repositories

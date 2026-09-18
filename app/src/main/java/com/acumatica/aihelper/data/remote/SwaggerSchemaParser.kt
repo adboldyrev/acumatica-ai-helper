@@ -36,35 +36,87 @@ class SwaggerSchemaParser {
                 val keys = definitions.keys()
                 while (keys.hasNext()) {
                     val entityName = keys.next()
+                    
+                    // CRITICAL FIX: Only include entities that are top-level endpoints (present in 'paths')
+                    // This prevents including nested sub-entities like CustomerContact that cannot be queried directly.
+                    if (!pathToEntityMap.containsKey(entityName)) continue
+
+                    // Skip internal Acumatica schemas and wrappers
+                    if (entityName.endsWith("_Invoke") || entityName.endsWith("_Action") || 
+                        entityName.endsWith("_Result") || entityName == "Entity" || 
+                        entityName == "FileLink" || entityName == "ODataError") continue
+
                     val entityObj = definitions.getJSONObject(entityName)
-                    val propertiesObj = entityObj.optJSONObject("properties")
+                    
+                    // Collect all properties, including those from allOf (common in OAS 3.0)
+                    val allProperties = JSONObject()
+                    
+                    // 1. Check top-level properties
+                    entityObj.optJSONObject("properties")?.let { props ->
+                        val pKeys = props.keys()
+                        while (pKeys.hasNext()) {
+                            val k = pKeys.next()
+                            allProperties.put(k, props.get(k))
+                        }
+                    }
+                    
+                    // 2. Check allOf properties
+                    entityObj.optJSONArray("allOf")?.let { allOf ->
+                        for (i in 0 until allOf.length()) {
+                            val sub = allOf.optJSONObject(i)
+                            sub?.optJSONObject("properties")?.let { props ->
+                                val pKeys = props.keys()
+                                while (pKeys.hasNext()) {
+                                    val k = pKeys.next()
+                                    allProperties.put(k, props.get(k))
+                                }
+                            }
+                        }
+                    }
+
+                    if (allProperties.length() == 0) continue
+
+                    // If the schema only has 'entity' and 'parameters', it's almost certainly a wrapper
+                    if (allProperties.has("entity") && allProperties.has("parameters") && allProperties.length() <= 3) {
+                        continue
+                    }
+
                     val fieldsList = mutableListOf<String>()
                     var detectedKeyField = "ID"
 
-                    if (propertiesObj != null) {
-                        val propKeys = propertiesObj.keys()
-                        while (propKeys.hasNext()) {
-                            val fieldName = propKeys.next()
-                            if (!fieldName.startsWith("_") && fieldName != "id" && fieldName != "rowNumber") {
+                    val propKeys = allProperties.keys()
+                    while (propKeys.hasNext()) {
+                        val fieldName = propKeys.next()
+                        if (!fieldName.startsWith("_") && fieldName != "id" && fieldName != "rowNumber" && 
+                            fieldName != "note" && fieldName != "custom") {
+                            
+                            // Check if it's a "real" field (not a nested entity ref)
+                            val fieldObj = allProperties.optJSONObject(fieldName)
+                            val isReference = fieldObj?.has("\$ref") == true
+                            val isObject = fieldObj?.optString("type") == "object"
+                            
+                            // In Acumatica, we mostly want the flat fields for now. 
+                            // Nested objects are usually sub-entities or linked records.
+                            if (!isReference && !isObject) {
                                 fieldsList.add(fieldName)
                             }
-                        }
-                        
-                        detectedKeyField = when {
-                            propertiesObj.has("${entityName}ID") -> "${entityName}ID"
-                            propertiesObj.has("CustomerID") -> "CustomerID"
-                            propertiesObj.has("InventoryID") -> "InventoryID"
-                            propertiesObj.has("OrderNbr") -> "OrderNbr"
-                            propertiesObj.has("ReferenceNbr") -> "ReferenceNbr"
-                            propertiesObj.has("VendorID") -> "VendorID"
-                            propertiesObj.has("ProjectID") -> "ProjectID"
-                            propertiesObj.has("WarehouseID") -> "WarehouseID"
-                            else -> propertiesObj.keys().asSequence().firstOrNull { it.contains("id", ignoreCase = true) || it.contains("nbr", ignoreCase = true) } ?: "ID"
                         }
                     }
                     
                     if (fieldsList.isNotEmpty()) {
-                        val endpointPath = pathToEntityMap[entityName] ?: "/$entityName"
+                        detectedKeyField = when {
+                            allProperties.has("${entityName}ID") -> "${entityName}ID"
+                            allProperties.has("CustomerID") -> "CustomerID"
+                            allProperties.has("InventoryID") -> "InventoryID"
+                            allProperties.has("OrderNbr") -> "OrderNbr"
+                            allProperties.has("ReferenceNbr") -> "ReferenceNbr"
+                            allProperties.has("VendorID") -> "VendorID"
+                            allProperties.has("ProjectID") -> "ProjectID"
+                            allProperties.has("WarehouseID") -> "WarehouseID"
+                            else -> allProperties.keys().asSequence().firstOrNull { it.contains("id", ignoreCase = true) || it.contains("nbr", ignoreCase = true) } ?: fieldsList[0]
+                        }
+
+                        val endpointPath = pathToEntityMap[entityName]!!
                         result[entityName] = ParsedEntity(
                             fields = fieldsList.sorted(),
                             endpointPath = endpointPath,

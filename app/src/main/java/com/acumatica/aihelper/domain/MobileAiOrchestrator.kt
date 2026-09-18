@@ -4,6 +4,7 @@ import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.acumatica.aihelper.data.exceptions.AcumaticaApiException
 import com.acumatica.aihelper.data.exceptions.EntityNotFoundException
 import com.acumatica.aihelper.data.local.ChatDao
 import com.acumatica.aihelper.data.local.ChatMessageEntity
@@ -178,7 +179,8 @@ class MobileAiOrchestrator(
         val token = securityRepo.getAccessToken() ?: return@withContext "Error: No access token found."
 
         return@withContext try {
-            val resultJson = restClient.executeGet(config.baseUrl, token, "StockItem", barcode)
+            val barcodeUrl = "${config.baseUrl}/entity/Default/${config.apiVersion}/StockItem/$barcode"
+            val resultJson = restClient.executeGet(barcodeUrl, token, "StockItem", barcode)
             val answer = "Barcode search result for $barcode: $resultJson"
             chatDao.insertMessage(
                 ChatMessageEntity(
@@ -324,13 +326,21 @@ class MobileAiOrchestrator(
                     accessToken = token,
                     entityName = toolCall.entityName,
                     recordKey = toolCall.recordKey,
-                    selectedFields = selectedFields
+                    selectedFields = selectedFields,
+                    queryParams = toolCall.queryParams ?: emptyMap()
                 )
             }
 
             val finalJsonResult: String = if (isMutation && toolCall.recordKey != null) {
                 runCatching {
-                    restClient.executeGet(config.baseUrl, token, toolCall.entityName, toolCall.recordKey, selectedFields = selectedFields)
+                    restClient.executeGet(
+                        baseUrl = requestUrl, 
+                        accessToken = token, 
+                        entityName = toolCall.entityName, 
+                        recordKey = toolCall.recordKey, 
+                        selectedFields = selectedFields,
+                        queryParams = toolCall.queryParams ?: emptyMap()
+                    )
                 }.getOrDefault(rawResult)
             } else {
                 rawResult
@@ -362,6 +372,21 @@ class MobileAiOrchestrator(
                 )
             )
             notFoundError
+        } catch (e: AcumaticaApiException) {
+            val errorMsg = if (e.statusCode >= 500) {
+                "I couldn't process your request - please rephrase it."
+            } else {
+                "Acumatica ERP Error(${e.statusCode}): ${e.message}"
+            }
+            chatDao.insertMessage(
+                ChatMessageEntity(
+                    sender = "bot",
+                    text = errorMsg,
+                    entityName = toolCall.entityName,
+                    recordKey = toolCall.recordKey
+                )
+            )
+            errorMsg
         } catch (e: Exception) {
             val genericError = "❌ Acumatica ERP Error: ${e.message}"
             chatDao.insertMessage(

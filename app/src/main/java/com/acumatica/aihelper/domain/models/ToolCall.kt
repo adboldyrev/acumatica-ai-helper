@@ -8,5 +8,6 @@ data class ToolCall(
     val method: String, // GET, PUT, POST, PATCH, DELETE
     val recordKey: String?,
     val payload: JSONObject?,
-    val endpointPath: String?
+    val endpointPath: String?,
+    val queryParams: Map<String, String?>? = null
 )

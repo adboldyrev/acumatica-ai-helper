@@ -1,6 +1,7 @@
 package com.acumatica.aihelper.data.remote
 
 import android.util.Log
+import com.acumatica.aihelper.data.exceptions.AcumaticaApiException
 import com.acumatica.aihelper.data.exceptions.EntityNotFoundException
 import com.acumatica.aihelper.data.remote.models.OAuthTokenResponse
 import com.acumatica.aihelper.domain.models.AcumaticaConfig
@@ -14,10 +15,22 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 
-class AcumaticaRestClient(private val httpClient: OkHttpClient = OkHttpClient()) {
+import java.util.concurrent.TimeUnit
+
+class AcumaticaRestClient(
+    private val httpClient: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
+        .build()
+) {
 
     suspend fun loginOAuth(config: AcumaticaConfig): OAuthTokenResponse = withContext(Dispatchers.IO) {
-        val tokenUrl = "${config.baseUrl}/t/company/identity/connect/token"
+        val cleanBaseUrl = config.baseUrl.trimEnd('/')
+        val tokenUrl = "$cleanBaseUrl/t/company/identity/connect/token"
+        Log.i("AcumaticaClient", "Login URL: $tokenUrl")
+        
         val formBody = FormBody.Builder()
             .add("grant_type", "password")
             .add("client_id", config.clientId)
@@ -81,7 +94,8 @@ class AcumaticaRestClient(private val httpClient: OkHttpClient = OkHttpClient())
     }
 
     suspend fun getLlmConnection(baseUrl: String, accessToken: String, apiVersion: String): JSONObject? = withContext(Dispatchers.IO) {
-        val url = "$baseUrl/entity/LLMConnections/$apiVersion/LLMConnection?\$expand=Parameters"
+        val cleanBaseUrl = baseUrl.trimEnd('/')
+        val url = "$cleanBaseUrl/entity/LLMConnections/$apiVersion/LLMConnection?\$expand=Parameters"
         val request = Request.Builder()
             .url(url)
             .addHeader("Authorization", "Bearer $accessToken")
@@ -102,18 +116,31 @@ class AcumaticaRestClient(private val httpClient: OkHttpClient = OkHttpClient())
         accessToken: String,
         entityName: String,
         recordKey: String?,
-        selectedFields: Set<String> = emptySet()
+        selectedFields: Set<String> = emptySet(),
+        queryParams: Map<String, String?> = emptyMap()
     ): String = withContext(Dispatchers.IO) {
-        val selectQuery = if (selectedFields.isNotEmpty()) "\$select=${selectedFields.joinToString(",")}" else "\$select=*"
-        val extraParams = if (recordKey != null) {
-            selectQuery
-        } else {
-            "\$top=5&$selectQuery"
+        val mergedParams = queryParams.toMutableMap()
+        
+        // Merge $select from selectedFields if not already in queryParams
+        if (!mergedParams.containsKey("\$select") && selectedFields.isNotEmpty()) {
+            mergedParams["\$select"] = selectedFields.joinToString(",")
+        } else if (!mergedParams.containsKey("\$select")) {
+            mergedParams["\$select"] = "*"
         }
 
+        // Add default $top=5 for collection queries if not provided
+        if (recordKey == null && !mergedParams.containsKey("\$top")) {
+            mergedParams["\$top"] = "5"
+        }
+
+        val queryString = mergedParams.entries
+            .filter { it.value != null }
+            .joinToString("&") { "${it.key}=${it.value}" }
+
         val finalUrl = when {
-            baseUrl.contains("?") -> "$baseUrl&$extraParams"
-            else -> "$baseUrl?$extraParams"
+            queryString.isBlank() -> baseUrl
+            baseUrl.contains("?") -> "$baseUrl&$queryString"
+            else -> "$baseUrl?$queryString"
         }
 
 
@@ -142,7 +169,7 @@ class AcumaticaRestClient(private val httpClient: OkHttpClient = OkHttpClient())
                 if (responseBodyStr.contains("cannot be found") || responseBodyStr.contains("does not exist")) {
                     throw EntityNotFoundException(entityName, recordKey ?: "N/A", "Record '$recordKey' does not exist in entity '$entityName'.")
                 }
-                throw Exception("GET Error (${response.code}): $responseBodyStr")
+                throw AcumaticaApiException(response.code, responseBodyStr, "GET Error (${response.code}): $responseBodyStr")
             }
 
             if (responseBodyStr.trim() == "[]") {
@@ -189,7 +216,7 @@ class AcumaticaRestClient(private val httpClient: OkHttpClient = OkHttpClient())
             }
 
             if (!response.isSuccessful) {
-                throw Exception("Mutation Error ($method ${response.code}): $responseBodyStr")
+                throw AcumaticaApiException(response.code, responseBodyStr, "Mutation Error ($method ${response.code}): $responseBodyStr")
             }
 
             responseBodyStr
